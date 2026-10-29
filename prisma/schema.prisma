@@ -1,0 +1,146 @@
+// Prisma schema for IRCTC Auto-Booking Agent
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// A saved IRCTC login session (cookies + localStorage persisted to disk).
+/// We never store the user's IRCTC password — only the result of a manual
+/// login performed by the user in a real browser window.
+model Session {
+  id        String   @id @default(cuid())
+  label     String   /// human-readable name, e.g. "Primary IRCTC account"
+  /// Filesystem path where Playwright storageState JSON lives.
+  /// Relative to /home/z/my-project/.sessions/
+  storagePath String
+  /// Whether the user has completed manual login.
+  isActive  Boolean  @default(true)
+  /// Last time we verified the session was still logged in.
+  lastVerifiedAt DateTime?
+  /// Username shown on the IRCTC dashboard after login (for display only).
+  loggedInAs String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  jobs BookingJob[]
+}
+
+/// A person whose details will be auto-filled on the passenger details page.
+model Passenger {
+  id        String   @id @default(cuid())
+  name      String
+  age       Int
+  gender    String   /// "M" | "F" | "T"
+  /// Berth preference: LB (Lower), MB (Middle), UB (Upper), SL (Side Lower),
+  /// SU (Side Upper), WS (Window Side), CB (Combo), NC (No Choice)
+  berthPref String   @default("NC")
+  /// Food preference: V (Veg), N (Non-Veg), D (No Food) — only for Rajdhani/Shatabdi
+  foodPref  String   @default("D")
+  /// Nationality — defaults to India
+  nationality String @default("India")
+  /// Whether this passenger is the booking contact (mobile + email used)
+  isPrimary Boolean  @default(false)
+  /// Aadhaar last 4 (optional, used for Vande Bharat etc.)
+  aadhaarLast4 String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// One booking attempt (or one retry chain — each top-level run is one job).
+model BookingJob {
+  id        String   @id @default(cuid())
+  sessionId String
+  session   Session  @relation(fields: [sessionId], references: [id])
+
+  /// Search criteria (snapshot at job creation)
+  fromStation    String  /// station code, e.g. "NDLS"
+  fromStationName String? /// display name, e.g. "New Delhi"
+  toStation      String  /// station code, e.g. "BCT"
+  toStationName  String?
+  journeyDate    String  /// YYYY-MM-DD
+  travelClass    String  /// SL | 3A | 2A | 1A | CC | EC | 2S
+  quota          String  /// GN | TQ | PT | LD | HP
+  /// Preferred train numbers (comma-separated). Agent picks first available.
+  preferredTrains String?
+  /// JSON string of passenger IDs included in this booking.
+  passengerIdsJson String
+  /// Mobile number for booking contact
+  contactMobile  String
+  /// Email for booking contact (also used for IRCTC notifications)
+  contactEmail   String
+
+  /// Tatkal / retry configuration
+  retryEnabled       Boolean @default(true)
+  retryIntervalSec   Int     @default(5)
+  retryMaxMinutes    Int     @default(15)
+  /// Auto-book on availability (skip the "Confirm booking" pause)? Dangerous — defaults off.
+  autoConfirmBooking Boolean @default(false)
+  /// Whether to stop before payment (always true per user requirement)
+  pauseBeforePayment Boolean @default(true)
+
+  /// Job state machine
+  /// pending | running | paused_review | paused_payment | success | failed | cancelled | exhausted
+  status    String   @default("pending")
+  /// Current step label, e.g. "Searching trains...", "Filling passengers..."
+  currentStep String?
+  /// Attempt counter (each retry increments this)
+  attemptCount Int   @default(0)
+  /// Reason for the latest failure / pause / retry
+  lastMessage String?
+  /// Final result: PNR, transaction ID, etc. (on success)
+  resultJson String?
+  /// Whether a screenshot was captured (path stored in logs)
+  hasScreenshot Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  startedAt DateTime?
+  finishedAt DateTime?
+
+  logs LogEntry[]
+}
+
+/// A single log line / event emitted during a job run.
+/// Streamed to the dashboard in real time via SSE.
+model LogEntry {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       BookingJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  /// Timestamp of the event
+  ts        DateTime @default(now())
+  /// Severity: info | warn | error | success | step | screenshot
+  level     String   @default("info")
+  /// Human-readable message
+  message   String
+  /// Optional screenshot path (relative to /home/z/my-project/.sessions/screens/)
+  screenshotPath String?
+
+  @@index([jobId, ts])
+}
+
+/// Single-row table for app-level settings (email config, defaults).
+model Settings {
+  id        String   @id @default("singleton")
+  /// SMTP host, e.g. smtp.gmail.com
+  smtpHost  String?
+  smtpPort  Int?
+  smtpUser  String?
+  /// App password stored in plaintext (sandbox-only; production should use a vault).
+  smtpPass  String?
+  smtpFrom  String?
+  /// Where to send booking notifications
+  notifyEmail String?
+  /// Whether email notifications are enabled
+  emailEnabled Boolean @default(false)
+
+  /// Default retry config
+  defaultRetryIntervalSec Int @default(5)
+  defaultRetryMaxMinutes   Int @default(15)
+
+  updatedAt DateTime @updatedAt
+}
