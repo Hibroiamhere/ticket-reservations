@@ -23,6 +23,7 @@ import path from "node:path";
 import { db } from "@/lib/db";
 import { JobLogger } from "./logger";
 import { runIrctcBooking, type AgentRunResult } from "./irctc-agent";
+import { runTatkalJob } from "./tatkal-runner";
 import { jobStore, type ResumeDecision } from "./store";
 import { sendBookingNotification } from "./email";
 import type { AttemptOutcome, JobStatus, PassengerDTO } from "./types";
@@ -66,6 +67,44 @@ export async function runJob(jobId: string) {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Parse master list names.
+  const masterListNames = (job.masterListNames ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Build the AgentRunInput shared by both runners.
+  const agentInput = {
+    jobId,
+    sessionId: session.id,
+    storageFileName: session.storagePath,
+    fromStation: job.fromStation,
+    fromStationName: job.fromStationName ?? undefined,
+    toStation: job.toStation,
+    toStationName: job.toStationName ?? undefined,
+    journeyDate: job.journeyDate,
+    travelClass: job.travelClass,
+    quota: job.quota,
+    preferredTrains,
+    passengers,
+    contactMobile: job.contactMobile,
+    contactEmail: job.contactEmail,
+    pauseBeforePayment: job.pauseBeforePayment,
+    autoConfirmBooking: job.autoConfirmBooking,
+    useMasterList: job.useMasterList,
+    masterListNames,
+    paymentMethod: job.paymentMethod,
+    dryRun: job.dryRun,
+    tatkalMode: job.tatkalMode,
+  };
+
+  // Dispatch to Tatkal runner if enabled.
+  if (job.tatkalMode) {
+    await runTatkalJob(jobId, agentInput);
+    return;
+  }
+
+  // ----- Regular runner (one browser per attempt) -----
   // Mark running.
   await db.bookingJob.update({
     where: { id: jobId },
@@ -79,6 +118,15 @@ export async function runJob(jobId: string) {
   await logger.info(`Retry config: enabled=${job.retryEnabled}, every ${job.retryIntervalSec}s, max ${job.retryMaxMinutes} min.`);
   await logger.info(`Passengers: ${passengers.map((p) => p.name).join(", ")}`);
   if (preferredTrains.length) await logger.info(`Preferred trains: ${preferredTrains.join(", ")}`);
+  if (job.useMasterList && masterListNames.length) {
+    await logger.info(`Using IRCTC Master List: ${masterListNames.join(", ")}`);
+  }
+  if (job.dryRun) {
+    await logger.warn("DRY RUN MODE — agent will stop at the Review Journey page. No payment will be attempted.");
+  }
+  if (job.paymentMethod !== "SKIP") {
+    await logger.info(`Payment method: ${job.paymentMethod}`);
+  }
 
   const startTime = Date.now();
   const maxMs = job.retryMaxMinutes * 60_000;
@@ -89,35 +137,13 @@ export async function runJob(jobId: string) {
     attempt += 1;
     const elapsed = Date.now() - startTime;
 
-    // Check cancellation.
-    if (jobStore.cancel.bind(jobStore, jobId) && false) {
-      // (no-op; cancel is checked via abortSignal inside the agent)
-    }
-
     await db.bookingJob.update({
       where: { id: jobId },
       data: { attemptCount: attempt, currentStep: `Attempt ${attempt} in progress…` },
     });
     await logger.step(`── Attempt ${attempt} started (elapsed ${Math.floor(elapsed / 1000)}s) ──`);
 
-    const result: AgentRunResult = await runIrctcBooking({
-      jobId,
-      sessionId: session.id,
-      storageFileName: session.storagePath,
-      fromStation: job.fromStation,
-      fromStationName: job.fromStationName ?? undefined,
-      toStation: job.toStation,
-      toStationName: job.toStationName ?? undefined,
-      journeyDate: job.journeyDate,
-      travelClass: job.travelClass,
-      quota: job.quota,
-      preferredTrains,
-      passengers,
-      contactMobile: job.contactMobile,
-      contactEmail: job.contactEmail,
-      pauseBeforePayment: job.pauseBeforePayment,
-      autoConfirmBooking: job.autoConfirmBooking,
-    });
+    const result: AgentRunResult = await runIrctcBooking(agentInput);
 
     jobStore.setLastOutcome(jobId, result.outcome);
     const outcome = result.outcome;

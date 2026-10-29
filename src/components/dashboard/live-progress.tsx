@@ -202,6 +202,28 @@ export function LiveProgress({ jobId, onClose }: Props) {
           </div>
         )}
 
+        {/* Dry-run completion banner */}
+        {status === "success" && lastMessage?.toLowerCase().includes("dry run") && (
+          <div className="rounded-md border border-emerald-500/40 bg-emerald-50/60 dark:bg-emerald-950/30 p-4 space-y-2">
+            <div className="font-medium flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
+              <CheckCircle2 className="h-5 w-5" /> Test passed!
+            </div>
+            <p className="text-sm">
+              Your saved IRCTC session is valid and the agent successfully reached the Review Journey page.
+              You&apos;re ready for a real Tatkal booking. Go back to the Book tab, uncheck &quot;dry-run&quot; if needed,
+              and click <strong>Start Booking</strong>.
+            </p>
+          </div>
+        )}
+
+        {/* Tatkal mode info banner */}
+        {attemptCount > 0 && isRunning && !isPaused && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20 p-3 text-sm">
+            <span className="text-amber-700 dark:text-amber-400 font-medium">⏱ Tatkal retry loop active: </span>
+            attempt #{attemptCount} in progress. The agent is refreshing the search and clicking Book Now the moment seats drop.
+          </div>
+        )}
+
         {/* Action buttons for paused state */}
         {isPaused && (
           <div className="rounded-md border border-amber-500/40 bg-amber-50/60 dark:bg-amber-950/30 p-4 space-y-2">

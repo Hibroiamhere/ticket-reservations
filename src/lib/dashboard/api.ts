@@ -114,6 +114,17 @@ export async function startBooking(req: BookingRequest): Promise<string> {
   return r.jobId;
 }
 
+/** Start a DRY-RUN booking — runs through the whole flow but stops at the
+ * Review Journey page without paying. Used by the "Test Booking" button. */
+export async function testBooking(req: BookingRequest): Promise<string> {
+  const r = await json<{ jobId: string }>(await fetch("/api/jobs/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  }));
+  return r.jobId;
+}
+
 export async function listJobs(): Promise<JobDTO[]> {
   const r = await json<{ jobs: JobDTO[] }>(await fetch("/api/jobs/list"));
   return r.jobs;

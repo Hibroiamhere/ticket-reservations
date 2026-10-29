@@ -41,7 +41,22 @@ export interface BookingRequest {
   retryMaxMinutes: number;
   autoConfirmBooking: boolean;
   pauseBeforePayment: boolean;
+  // New features:
+  tatkalMode: boolean;        // persistent browser + fast retries
+  useMasterList: boolean;     // click IRCTC Master List dropdown instead of typing
+  masterListNames: string[];  // names to click in master list dropdown
+  paymentMethod: PaymentMethodCode;  // auto-select this payment option
+  dryRun: boolean;            // stop at Review page without paying (test mode)
 }
+
+export type PaymentMethodCode =
+  | "SKIP"
+  | "BHIM_UPI"
+  | "CREDIT_CARD"
+  | "DEBIT_CARD"
+  | "WALLET"
+  | "PAY_ON_DELIVERY"
+  | "INTERNATIONAL_CARD";
 
 export interface PassengerDTO {
   id: string;
@@ -124,4 +139,14 @@ export const FOOD_PREFERENCES = [
   { code: "D", label: "No Food" },
   { code: "V", label: "Veg" },
   { code: "N", label: "Non-Veg" },
+] as const;
+
+export const PAYMENT_METHODS = [
+  { code: "SKIP", label: "Skip — I'll pick manually on payment page" },
+  { code: "BHIM_UPI", label: "BHIM UPI" },
+  { code: "CREDIT_CARD", label: "Credit Card" },
+  { code: "DEBIT_CARD", label: "Debit Card" },
+  { code: "WALLET", label: "Wallet (Amazon Pay / Mobikwik / Freecharge)" },
+  { code: "PAY_ON_DELIVERY", label: "Pay on Delivery" },
+  { code: "INTERNATIONAL_CARD", label: "International Card" },
 ] as const;

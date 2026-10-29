@@ -46,6 +46,12 @@ export async function POST(req: Request) {
       retryMaxMinutes: body.retryMaxMinutes ?? 15,
       autoConfirmBooking: body.autoConfirmBooking ?? false,
       pauseBeforePayment: body.pauseBeforePayment ?? true,
+      // New fields:
+      tatkalMode: body.tatkalMode ?? false,
+      useMasterList: body.useMasterList ?? true,
+      masterListNames: Array.isArray(body.masterListNames) ? body.masterListNames.join(",") : null,
+      paymentMethod: body.paymentMethod ?? "SKIP",
+      dryRun: body.dryRun ?? false,
       status: "pending",
     },
   });

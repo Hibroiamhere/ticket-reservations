@@ -83,6 +83,31 @@ model BookingJob {
   /// Whether to stop before payment (always true per user requirement)
   pauseBeforePayment Boolean @default(true)
 
+  /// Tatkal mode — uses a persistent browser across retries (no relaunch
+  /// overhead), skips intermediate screenshots, and uses 1-2s retry
+  /// intervals. Designed to win Tatkal drops at 10 AM / 11 AM.
+  tatkalMode Boolean @default(false)
+
+  /// Use IRCTC's "Master List" feature instead of typing passenger details.
+  /// When true, the agent clicks the Master List link on the passenger page
+  /// and selects matching passengers by name. Faster + more reliable.
+  useMasterList Boolean @default(true)
+
+  /// Master list passenger names to select (comma-separated). The agent
+  /// clicks each name in the IRCTC master list dropdown. If empty, falls
+  /// back to typing passenger details from saved Passenger rows.
+  masterListNames String?
+
+  /// Payment method to auto-select on the IRCTC payment page.
+  /// Values: SKIP (don't auto-pick — user manually selects) | BHIM_UPI |
+  /// CREDIT_CARD | DEBIT_CARD | WALLET | PAY_ON_DELIVERY | INTERNATIONAL_CARD
+  paymentMethod String @default("SKIP")
+
+  /// Dry-run mode — runs the full agent flow but stops at the Review
+  /// Journey page WITHOUT proceeding to payment. Useful for verifying
+  /// the agent works against your session before a real booking.
+  dryRun Boolean @default(false)
+
   /// Job state machine
   /// pending | running | paused_review | paused_payment | success | failed | cancelled | exhausted
   status    String   @default("pending")
