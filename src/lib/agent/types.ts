@@ -47,6 +47,12 @@ export interface BookingRequest {
   masterListNames: string[];  // names to click in master list dropdown
   paymentMethod: PaymentMethodCode;  // auto-select this payment option
   dryRun: boolean;            // stop at Review page without paying (test mode)
+
+  // Rapid / software options:
+  rapidIntervalMs?: number;   // override retry interval in ms (min 500ms)
+  scheduledStartAt?: number;  // epoch ms to start scanning (tatkal window)
+  prewarmSeconds?: number;    // pre-load page this many seconds before start
+  headful?: boolean;          // show browser window (easier to watch + pay)
 }
 
 export type PaymentMethodCode =
