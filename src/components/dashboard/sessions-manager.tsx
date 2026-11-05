@@ -14,14 +14,25 @@
  *   5. "Delete" — removes the session record + storage file.
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, LogIn, Save, ShieldCheck, Trash2, Plus, ExternalLink, AlertTriangle } from "lucide-react";
+import {
+  Loader2,
+  LogIn,
+  Save,
+  ShieldCheck,
+  Trash2,
+  Plus,
+  ExternalLink,
+  AlertTriangle,
+  Users,
+  RefreshCw,
+} from "lucide-react";
 import * as api from "@/lib/dashboard/api";
 import type { SessionDTO } from "@/lib/agent/types";
 
@@ -35,6 +46,8 @@ export function SessionsManager({ sessions, onChange }: Props) {
   const [newLabel, setNewLabel] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [loginOpenId, setLoginOpenId] = useState<string | null>(null);
+  const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [masterList, setMasterList] = useState<{ sessionId: string; passengers: { name: string }[] } | null>(null);
 
   const create = async () => {
     try {
@@ -85,6 +98,30 @@ export function SessionsManager({ sessions, onChange }: Props) {
     await api.cancelLogin(id);
     setLoginOpenId(null);
   };
+
+  const fetchMasterList = async (id: string) => {
+    setFetchingId(id);
+    try {
+      const res = await fetch(`/api/session/master-list?sessionId=${encodeURIComponent(id)}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setMasterList({ sessionId: id, passengers: data.passengers ?? [] });
+      onChange();
+      toast({
+        title: "Master List fetched",
+        description: `${data.passengers?.length ?? 0} passenger(s) loaded from your IRCTC account.`,
+      });
+    } catch (err) {
+      toast({ title: "Master List fetch failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setFetchingId(null);
+    }
+  };
+
+  const clearMasterList = () => setMasterList(null);
 
   const verify = async (id: string) => {
     setBusyId(id);
@@ -184,6 +221,33 @@ export function SessionsManager({ sessions, onChange }: Props) {
                 <Button size="sm" variant="outline" onClick={() => verify(s.id)} disabled={busyId === s.id} className="gap-2">
                   <ShieldCheck className="h-4 w-4" /> Verify
                 </Button>
+                {s.loggedInAs && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => fetchMasterList(s.id)}
+                      disabled={fetchingId === s.id}
+                      className="gap-2 border-blue-500 text-blue-700 hover:bg-blue-50"
+                    >
+                      {fetchingId === s.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Users className="h-4 w-4" />}
+                      Fetch Master List
+                    </Button>
+                    {masterList?.sessionId === s.id && masterList.passengers.length > 0 && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className="text-xs text-muted-foreground">Saved passengers:</span>
+                        {masterList.passengers.map((p, i) => (
+                          <span key={i} className="text-xs bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 px-2 py-1 rounded border border-blue-200 dark:border-blue-800">
+                            {p.name}
+                          </span>
+                        ))}
+                        <Button size="sm" variant="ghost" onClick={clearMasterList} className="gap-1 text-xs">
+                          Clear
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                )}
                 <Button size="sm" variant="ghost" onClick={() => remove(s.id)} className="gap-2 text-red-600 hover:text-red-700">
                   <Trash2 className="h-4 w-4" /> Delete
                 </Button>

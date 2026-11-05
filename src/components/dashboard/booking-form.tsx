@@ -22,7 +22,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Rocket, Zap, FlaskConical, Train } from "lucide-react";
+import { Loader2, Rocket, Zap, FlaskConical, Train, Users, RefreshCw, CheckCircle2 } from "lucide-react";
 import {
   TRAVEL_CLASSES,
   QUOTAS,
@@ -87,6 +87,17 @@ export function BookingForm({ sessions, passengers, onJobStarted }: Props) {
   const [paymentMethod, setPaymentMethod] = useState("SKIP");
   const [dryRun, setDryRun] = useState(false);
 
+  // Rapid / software options.
+  const [rapidIntervalMs, setRapidIntervalMs] = useState(500);
+  const [scheduledStart, setScheduledStart] = useState("");
+  const [prewarm, setPrewarm] = useState(true);
+  const [headful, setHeadful] = useState(true);
+
+  // Master List passengers fetched from the user's IRCTC account.
+  const [masterListPassengers, setMasterListPassengers] = useState<{ name: string }[]>([]);
+  const [masterListLoading, setMasterListLoading] = useState(false);
+  const [selectedMasterListNames, setSelectedMasterListNames] = useState<string[]>([]);
+
   // Default session = first active session.
   useEffect(() => {
     if (!sessionId && sessions.length > 0) {
@@ -134,9 +145,15 @@ export function BookingForm({ sessions, passengers, onJobStarted }: Props) {
     pauseBeforePayment,
     tatkalMode,
     useMasterList,
-    masterListNames: masterListNames.split(",").map((s) => s.trim()).filter(Boolean),
+    masterListNames: useMasterList ? selectedMasterListNames : masterListNames.split(",").map((s) => s.trim()).filter(Boolean),
     paymentMethod: paymentMethod as BookingRequest["paymentMethod"],
     dryRun,
+
+    // Rapid / software options.
+    rapidIntervalMs,
+    scheduledStartAt: scheduledStart ? new Date(scheduledStart).getTime() : undefined,
+    prewarmSeconds: prewarm ? 30 : 0,
+    headful,
   });
 
   const validate = (): string | null => {
@@ -183,16 +200,26 @@ export function BookingForm({ sessions, passengers, onJobStarted }: Props) {
 
   // Presets.
   const tatkalPreset = () => {
+    const now = new Date();
+    // Default scheduled start: next 10:00 (AC tatkal window).
+    const start = new Date(now);
+    start.setHours(10, 0, 0, 0);
+    if (start <= now) start.setDate(start.getDate() + 1);
+
     setQuota("TQ");
     setTatkalMode(true);
     setRetryEnabled(true);
-    setRetryIntervalSec(2);
+    setRetryIntervalSec(1);
     setRetryMaxMinutes(10);
     setUseMasterList(true);
     setPauseBeforePayment(true);
+    setRapidIntervalMs(500);
+    setScheduledStart(start.toISOString().slice(0, 16));
+    setPrewarm(true);
+    setHeadful(false);
     toast({
-      title: "🚀 Tatkal preset applied",
-      description: "Tatkal mode ON, 2s retries, 10-min window, master list ON, pause before pay. Tune class/date for your route.",
+      title: "🚄 Rapid Tatkal preset applied",
+      description: "Tatkal mode ON, 500ms rapid scans, master list ON, pause before pay, scheduled at 10:00. Tune date + master names before booking.",
     });
   };
 
@@ -320,10 +347,90 @@ export function BookingForm({ sessions, passengers, onJobStarted }: Props) {
             <Checkbox checked={useMasterList} onCheckedChange={(v) => setUseMasterList(v === true)} />
           </div>
           {useMasterList && (
-            <div className="space-y-2">
-              <Label htmlFor="masterListNames">Master List passenger names (comma-separated, EXACT match)</Label>
-              <Input id="masterListNames" value={masterListNames} onChange={(e) => setMasterListNames(e.target.value)} placeholder="e.g. RAHUL SHARMA, PRIYA SHARMA" />
-              <p className="text-xs text-muted-foreground">These must match the names exactly as they appear in your IRCTC account&apos;s Master List. Names are case-sensitive.</p>
+            <div className="space-y-3">
+              {/* Fetch master list from saved IRCTC session */}
+              <div className="flex flex-wrap items-center gap-3 border-b border-muted pb-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (!sessionId) { toast({ title: "Select session first", description: "Pick an IRCTC session above.", variant: "destructive" }); return; }
+                    setMasterListLoading(true);
+                    fetch(`/api/session/master-list?sessionId=${encodeURIComponent(sessionId)}`)
+                      .then(async (r) => {
+                        if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error ?? `HTTP ${r.status}`); }
+                        return r.json();
+                      })
+                      .then((data) => {
+                        setMasterListPassengers(data.passengers ?? []);
+                        setSelectedMasterListNames((data.passengers ?? []).map((p: { name: string }) => p.name));
+                        toast({ title: "Master List loaded", description: `${data.passengers?.length ?? 0} passenger(s) from your IRCTC account.` });
+                      })
+                      .catch((err) => toast({ title: "Fetch failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" }))
+                      .finally(() => setMasterListLoading(false));
+                  }}
+                  disabled={masterListLoading || !sessionId}
+                  className="gap-2 border-blue-500 text-blue-700 hover:bg-blue-50"
+                >
+                  {masterListLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Users className="h-4 w-4" />}
+                  Fetch from my IRCTC Master List
+                </Button>
+                {!sessionId && <span className="text-xs text-muted-foreground">Select a session first</span>}
+                {masterListLoading && <span className="text-xs text-blue-600 dark:text-blue-400">Reading your account…</span>}
+              </div>
+
+              {/* Selected passengers as chips */}
+              {masterListPassengers.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs font-medium">Select passenger(s) to book</Label>
+                    <Badge variant="secondary" className="text-xs">{selectedMasterListNames.length} selected</Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {masterListPassengers.map((p) => {
+                      const isSelected = selectedMasterListNames.includes(p.name);
+                      return (
+                        <button
+                          key={p.name}
+                          onClick={() => {
+                            if (isSelected) setSelectedMasterListNames((cur) => cur.filter((n) => n !== p.name));
+                            else setSelectedMasterListNames([...selectedMasterListNames, p.name]);
+                          }}
+                          className={`flex items-center gap-2 px-3 py-2 rounded-md border text-sm transition-all ${
+                            isSelected
+                              ? "bg-blue-600 border-blue-600 text-white shadow-sm"
+                              : "bg-white dark:bg-input border-input text-foreground hover:bg-muted"
+                          }`}
+                        >
+                          {!isSelected ? <CheckCircle2 className="h-3 w-3 text-blue-500 opacity-0 transition-opacity" /> : <CheckCircle2 className="h-3 w-3 text-white" />}
+                          {p.name}
+                        </button>
+                      );
+                    })}
+                    {selectedMasterListNames.length === 0 && <span className="text-xs text-muted-foreground italic">None selected — agent will type passengers manually</span>}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Pick the passengers saved in your IRCTC account. Names must match exactly.</p>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="manualOverride"
+                  checked={!useMasterList || selectedMasterListNames.length === 0}
+                  onCheckedChange={() => {}}
+                  disabled
+                />
+                <label className="text-xs text-muted-foreground cursor-pointer">
+                  Or type names manually below
+                </label>
+              </div>
+              <Label htmlFor="masterListNames" className="text-xs">Manual names (comma-separated, EXACT match)</Label>
+              <Input
+                id="masterListNames"
+                value={masterListNames}
+                onChange={(e) => setMasterListNames(e.target.value)}
+                placeholder="e.g. RAHUL SHARMA, PRIYA SHARMA"
+              />
+              <p className="text-xs text-muted-foreground">Only used if no Master List passengers are selected.</p>
             </div>
           )}
         </div>
@@ -397,6 +504,71 @@ export function BookingForm({ sessions, passengers, onJobStarted }: Props) {
               : "Regular mode: retry interval recommended 5-10s. Use Tatkal mode for time-critical bookings."}
           </p>
         </div>
+
+        {/* Rapid / software options */}
+        {tatkalMode && (
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-emerald-600" /> Rapid-fire scanner (faster than human)
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Sub-second scans, blocked images, scheduled start. The agent fires the instant the tatkal window opens.
+                </p>
+              </div>
+              <Checkbox checked={true} onCheckedChange={() => {}} disabled />
+            </div>
+            <Separator />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Scan interval (ms)</Label>
+                <Input
+                  type="number"
+                  min={500}
+                  max={5000}
+                  value={rapidIntervalMs}
+                  onChange={(e) => setRapidIntervalMs(Math.max(500, Number(e.target.value) || 500))}
+                />
+                <p className="text-xs text-muted-foreground">500ms = 2 scans/sec</p>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Start at (HH:MM)</Label>
+                <Input
+                  type="time"
+                  value={scheduledStart}
+                  onChange={(e) => setScheduledStart(e.target.value)}
+                  placeholder="10:00"
+                />
+                <p className="text-xs text-muted-foreground">AC: 10:00 · Non-AC: 11:00</p>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Pre-warm (sec)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={prewarm ? 30 : 0}
+                  onChange={(e) => setPrewarm(Number(e.target.value) > 0)}
+                />
+                <p className="text-xs text-muted-foreground">Load page before window</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 rounded-md border p-3">
+              <Checkbox checked={headful} onCheckedChange={(v) => setHeadful(v === true)} />
+              <div className="flex-1 space-y-1">
+                <div className="text-sm font-medium">Show browser window</div>
+                <p className="text-xs text-muted-foreground">Headful mode — watch the scan live, easier to complete payment manually.</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono text-emerald-600 dark:text-emerald-400">Rapid mode: ON · {rapidIntervalMs}ms scan interval</span>
+              {scheduledStart && (
+                <span className="text-xs font-mono text-amber-600 dark:text-amber-400">· Scheduled {scheduledStart}</span>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Payment + safety */}
         <div className="space-y-3">

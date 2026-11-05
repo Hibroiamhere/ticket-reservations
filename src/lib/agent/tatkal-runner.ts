@@ -1,34 +1,33 @@
 /**
- * Tatkal runner — keeps ONE browser open across all retries.
+ * Tatkal runner — rapid-fire, sub-second booking software.
  *
- * Why this matters for Tatkal:
- *   - Browser launch + session load + SPA boot = 3-5s of overhead per retry
- *   - Tatkal bookings sell out in 5-30 seconds — you can't afford 3-5s per attempt
- *   - This runner launches the browser ONCE, fills the search form ONCE,
- *     then loops "click Search → check availability → click Book Now"
- *     with sub-second cycle times.
+ * Designed to beat human speed:
+ *   * Persistent browser — launched ONCE, reused for every retry.
+ *   * Images/fonts/media blocked — pages parse in ~100-300ms.
+ *   * Minimum retry interval 500ms (humans need ~1.5-2s per click).
+ *   * Scheduled start — arms at a set time (10:00 AM AC / 11:00 AM non-AC)
+ *     and begins scanning the instant the window opens.
+ *   * Pre-warm — loads session + search page before the window so the first
+ *     search fires immediately at T-0.
+ *   * Direct DOM evaluation — no slow click/type/suggest chains.
+ *   * Fail-fast timeouts (6s) — if IRCTC hiccups, retry immediately.
  *
  * Flow:
- *   1. Launch browser, load session, navigate to search page. (one-time)
- *   2. Fill From/To/Date/Class/Quota. (one-time)
- *   3. Loop:
- *      a. Click Search.
- *      b. Look for a matching train with Book Now available.
- *      c. If found → click Book Now → master list / typed passengers →
- *         tick consent → click Review Journey → pause for payment (success).
- *      d. If not found → wait retryIntervalSec (default 2s for Tatkal) → loop.
- *      e. If retryMaxMinutes exceeded → mark exhausted.
- *
- * NOTE: This runner does NOT close the browser between retries. If the
- * page navigates to a different URL (e.g. captcha interstitial), it
- * navigates back to the search URL.
+ *   1. [Optional pre-warm] Launch browser, load session, navigate to search,
+ *      fill form once — keep page warm until scheduled start.
+ *   2. At scheduled start: enter rapid loop:
+ *      a. Click Search → scan preferred trains → click Book Now (sub-second)
+ *      b. If found → fill passengers (master list preferred) → Review Journey
+ *      c. Pause before payment (default) OR auto-confirm payment method
+ *      d. If not found → wait interval (≥500ms) → loop
+ *   3. Exhaust when retry window exceeded.
  */
 
 import { db } from "@/lib/db";
 import { JobLogger } from "./logger";
 import { jobStore, type ResumeDecision } from "./store";
 import { sendBookingNotification } from "./email";
-import type { AttemptOutcome, PassengerDTO } from "./types";
+import type { AttemptOutcome } from "./types";
 import {
   launchBrowserWithSession,
   navigateAndVerifyLogin,
@@ -45,21 +44,32 @@ function safeJson<T>(value: T): string {
   return JSON.stringify(value);
 }
 
+const MIN_INTERVAL_MS = 500; // hard floor — faster than human clicking
+
 export async function runTatkalJob(jobId: string, input: AgentRunInput) {
   const logger = new JobLogger(jobId);
+  const rapid = input.tatkalMode;
   const startTime = Date.now();
   const maxMs = (input.retryMaxMinutes || 15) * 60_000;
-  const intervalMs = Math.max(1_000, (input.retryIntervalSec || 2) * 1_000);
+  const intervalMs = Math.max(
+    MIN_INTERVAL_MS,
+    input.rapidIntervalMs ?? (input.retryIntervalSec ?? 1) * 1_000,
+  );
+  const scheduledAt = input.scheduledStartAt;
   let attempt = 0;
   let browser: Browser | null = null;
   let page: Page | null = null;
   let lastScreenshot: string | undefined;
 
-  await logger.step("🚀 TATKAL MODE — persistent browser, fast retries, master list enabled.");
-  await logger.info(`Retry interval: ${intervalMs / 1000}s. Window: ${maxMs / 60_000} min.`);
+  await logger.step("🚄 RAPID TATKAL SCANNER — sub-second retry loop, resources blocked.");
+  await logger.info(`Interval: ${intervalMs}ms. Window: ${maxMs / 60_000} min.`);
+  if (scheduledAt) {
+    const wait = scheduledAt - Date.now();
+    await logger.info(`Scheduled start in ${Math.max(0, Math.floor(wait / 1000))}s at ${new Date(scheduledAt).toLocaleTimeString()}.`);
+  }
 
   try {
-    // ----- One-time setup: launch + navigate + fill form -----
+    // ----- One-time setup: launch + navigate + fill form (pre-warm) -----
     const launched = await launchBrowserWithSession(input, logger);
     if ("error" in launched) {
       await failJob(jobId, launched.error);
@@ -75,68 +85,76 @@ export async function runTatkalJob(jobId: string, input: AgentRunInput) {
     }
 
     await fillSearchForm(page, input, logger);
+    await logger.success("Search form pre-filled. Waiting for tatkal window…");
 
-    // ----- Loop: search → check → book or retry -----
+    // ----- Wait for scheduled start if set -----
+    if (scheduledAt && Date.now() < scheduledAt) {
+      await sleep(scheduledAt - Date.now());
+      await logger.step("Tatkal window OPEN — rapid scan starting NOW.");
+    }
+
+    // ----- Rapid loop: search → scan → book or retry -----
     while (true) {
       attempt += 1;
       const elapsed = Date.now() - startTime;
       if (elapsed > maxMs) {
-        await exhaustJob(jobId, `Tatkal retry window (${maxMs / 60_000} min) exhausted after ${attempt} attempts.`);
+        await exhaustJob(jobId, `Rapid scan window (${maxMs / 60_000} min) exhausted after ${attempt} scans.`);
         return;
       }
 
       await db.bookingJob.update({
         where: { id: jobId },
-        data: { attemptCount: attempt, currentStep: `Tatkal attempt ${attempt} — searching…` },
+        data: {
+          attemptCount: attempt,
+          currentStep: `Rapid scan #${attempt} — searching… (${Math.floor(elapsed / 1000)}s elapsed)`,
+        },
       });
-      await logger.step(`── Tatkal attempt ${attempt} (elapsed ${Math.floor(elapsed / 1000)}s) ──`);
+      await logger.step(`── Rapid scan #${attempt} (${Math.floor(elapsed / 1000)}s) ──`);
 
       const searchResult = await searchAndFindTrain(page, input, logger);
       if (!searchResult.found) {
-        await logger.warn(`Attempt ${attempt}: ${searchResult.reason ?? "no availability"}. Retrying in ${intervalMs / 1000}s.`);
+        await logger.warn(`Scan #${attempt}: ${searchResult.reason ?? "no availability"}. Next scan in ${intervalMs}ms.`);
         await db.bookingJob.update({
           where: { id: jobId },
-          data: { currentStep: `Waiting ${intervalMs / 1000}s for retry`, lastMessage: searchResult.reason ?? "" },
+          data: { currentStep: `Scanning again in ${intervalMs}ms…`, lastMessage: searchResult.reason ?? "" },
         });
         await sleep(intervalMs);
         continue;
       }
 
-      // Train found — proceed to book.
-      await logger.success(`Train ${searchResult.trainNumber} available! Booking now…`);
+      // Train found — book immediately.
+      await logger.success(`Train ${searchResult.trainNumber} AVAILABLE! Booking now…`);
       const bookResult = await bookTrainAndFillPassengers(page, input, logger);
       if ("fatal" in bookResult) {
-        // Booking phase failed — fatal, don't retry.
         await failJob(jobId, bookResult.fatal);
         return;
       }
       lastScreenshot = bookResult.screenshot;
 
-      // Dry-run — stop here.
+      // Dry-run — stop at Review Journey.
       if (input.dryRun) {
-        await logger.success("DRY RUN COMPLETE — agent reached Review Journey page. No payment attempted.");
+        await logger.success("DRY RUN COMPLETE — Review Journey page reached. No payment attempted.");
         await succeedJob(jobId, { kind: "success", reviewScreenshot: lastScreenshot }, attempt);
         return;
       }
 
-      // Pause before payment.
+      // Pause before payment (default safety).
       if (input.pauseBeforePayment) {
-        await logger.success("Reached review page. Pausing for manual payment.");
+        await logger.success("Reached review page. PAUSE — complete payment manually NOW.");
         await db.bookingJob.update({
           where: { id: jobId },
           data: {
             status: "paused_payment",
             currentStep: "Paused before payment — awaiting user",
-            lastMessage: "Tatkal booking reached review page. Complete payment manually.",
+            lastMessage: "Tatkal booking reached review page. Complete payment in the IRCTC browser window!",
             resultJson: safeJson({ screenshotPath: lastScreenshot }),
           },
         });
         await sendBookingNotification(jobId, "paused_payment", {
-          message: "Tatkal booking reached review page. Complete payment NOW in the IRCTC browser window!",
+          message: "Tatkal booking reached review page. Complete payment NOW!",
           screenshotPath: lastScreenshot,
         }).catch(() => {});
 
-        // Wait for user decision.
         const { waitForResume } = jobStore.register(jobId);
         const decision: ResumeDecision = await waitForResume();
         jobStore.unregister(jobId);
@@ -146,27 +164,30 @@ export async function runTatkalJob(jobId: string, input: AgentRunInput) {
           return;
         }
         if (decision.action === "proceed") {
-          // User completed payment manually.
           await succeedJob(jobId, { kind: "success", reviewScreenshot: lastScreenshot }, attempt);
           return;
         }
-        // "retry" — start a fresh booking attempt with same persistent browser.
-        await logger.step("User requested retry. Restarting booking flow on persistent browser…");
-        // Navigate back to search page for the next attempt.
-        await page.goto("https://www.irctc.co.in/nget/train-search", { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-        await page.waitForTimeout(2_000);
-        await fillSearchForm(page, input, logger);
+        // "retry" — fresh scan on same persistent browser.
+        await logger.step("User retry. Restarting scan loop on persistent browser…");
+        await page?.goto("https://www.irctc.co.in/nget/train-search", {
+          waitUntil: "domcontentloaded",
+          timeout: 20_000,
+        }).catch(() => {});
+        await page?.waitForTimeout(rapid ? 600 : 1_500);
+        await fillSearchForm(page!, input, logger);
         continue;
       }
 
       // Auto-confirm + payment method.
-      await logger.warn("autoConfirmBooking ON — clicking through to payment.");
-      const payBtn = page.getByRole("button", { name: /continue to pay|pay now|continue/i }).first();
+      await logger.warn("auto-confirm ON — clicking through to payment.");
+      const payBtn = page
+        ?.getByRole("button", { name: /continue to pay|pay now|continue/i })
+        .first();
       await payBtn.click({ timeout: 8_000 }).catch(() => {});
-      await page.waitForTimeout(1_500);
+      await page?.waitForTimeout(rapid ? 400 : 1_500);
 
       if (input.paymentMethod !== "SKIP") {
-        const r = await selectPaymentMethod(page, input.paymentMethod, logger);
+        const r = await selectPaymentMethod(page!, input.paymentMethod, logger, rapid);
         lastScreenshot = r.screenshot ?? lastScreenshot;
       }
 
@@ -175,13 +196,17 @@ export async function runTatkalJob(jobId: string, input: AgentRunInput) {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await logger.error(`Tatkal runner crashed: ${msg}`);
+    await logger.error(`Rapid scanner crashed: ${msg}`);
     await failJob(jobId, msg);
   } finally {
     await closeBrowser(browser);
     jobStore.unregister(jobId);
   }
 }
+
+// ===========================================================================
+// Job terminal helpers
+// ===========================================================================
 
 async function succeedJob(jobId: string, outcome: Extract<AttemptOutcome, { kind: "success" }>, attempt: number) {
   const logger = new JobLogger(jobId);
@@ -190,12 +215,12 @@ async function succeedJob(jobId: string, outcome: Extract<AttemptOutcome, { kind
     data: {
       status: "success",
       currentStep: "Booking successful",
-      lastMessage: `Succeeded on attempt ${attempt}.`,
+      lastMessage: `Succeeded on scan #${attempt}.`,
       finishedAt: new Date(),
       resultJson: safeJson({ pnr: outcome.pnr, transactionId: outcome.transactionId, reviewScreenshot: outcome.reviewScreenshot }),
     },
   });
-  await logger.success(`Booking succeeded on attempt ${attempt}.`);
+  await logger.success(`Booking succeeded on scan #${attempt}.`);
   await sendBookingNotification(jobId, "success", { pnr: outcome.pnr, transactionId: outcome.transactionId }).catch(() => {});
 }
 
@@ -213,9 +238,9 @@ async function exhaustJob(jobId: string, reason: string) {
   const logger = new JobLogger(jobId);
   await db.bookingJob.update({
     where: { id: jobId },
-    data: { status: "exhausted", currentStep: "Retries exhausted", lastMessage: reason, finishedAt: new Date() },
+    data: { status: "exhausted", currentStep: "Scans exhausted", lastMessage: reason, finishedAt: new Date() },
   });
-  await logger.error(`Retries exhausted: ${reason}`);
+  await logger.error(`Scans exhausted: ${reason}`);
   await sendBookingNotification(jobId, "exhausted", { reason }).catch(() => {});
 }
 

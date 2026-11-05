@@ -18,7 +18,18 @@ import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, CheckCircle2, XCircle, Clock, AlertTriangle, Camera, Square, Play } from "lucide-react";
+import {
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  AlertTriangle,
+  Camera,
+  Square,
+  Play,
+  Zap,
+  Timer,
+} from "lucide-react";
 import * as api from "@/lib/dashboard/api";
 import type { JobStatus, LogLevel } from "@/lib/agent/types";
 
@@ -59,6 +70,7 @@ export function LiveProgress({ jobId, onClose }: Props) {
   const [currentStep, setCurrentStep] = useState<string>("");
   const [attemptCount, setAttemptCount] = useState(0);
   const [lastMessage, setLastMessage] = useState<string>("");
+  const [startTime, setStartTime] = useState<number | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [lastScreenshot, setLastScreenshot] = useState<string | undefined>();
   const [showScreenshot, setShowScreenshot] = useState(false);
@@ -79,6 +91,7 @@ export function LiveProgress({ jobId, onClose }: Props) {
           setCurrentStep(data.job.currentStep ?? "");
           setAttemptCount(data.job.attemptCount ?? 0);
           setLastMessage(data.job.lastMessage ?? "");
+          if (data.job.startedAt) setStartTime(new Date(data.job.startedAt).getTime());
         }
         if (data.logs) {
           setLogs(data.logs.map((l: LogEntry & { id: string }) => ({
@@ -173,26 +186,40 @@ export function LiveProgress({ jobId, onClose }: Props) {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              {isRunning && <Loader2 className="h-4 w-4 animate-spin text-amber-600" />}
-              {status === "success" && <CheckCircle2 className="h-5 w-5 text-emerald-600" />}
-              {status === "failed" && <XCircle className="h-5 w-5 text-red-600" />}
-              {isPaused && <Clock className="h-5 w-5 text-amber-600" />}
-              {(status === "exhausted" || status === "cancelled") && <AlertTriangle className="h-5 w-5 text-amber-600" />}
-              Job {jobId.slice(0, 8)}
-            </CardTitle>
-            <CardDescription className="mt-1">
-              {currentStep || (loadingHistory ? "Loading…" : "Waiting to start…")}
-            </CardDescription>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                {isRunning && <Loader2 className="h-4 w-4 animate-spin text-amber-600" />}
+                {status === "success" && <CheckCircle2 className="h-5 w-5 text-emerald-600" />}
+                {status === "failed" && <XCircle className="h-5 w-5 text-red-600" />}
+                {isPaused && <Clock className="h-5 w-5 text-amber-600" />}
+                {(status === "exhausted" || status === "cancelled") && <AlertTriangle className="h-5 w-5 text-amber-600" />}
+                <span className="font-bold">Job {jobId.slice(0, 8)}</span>
+                {isRunning && startTime && (
+                  <span className="text-xs text-muted-foreground ml-2">
+                    • {Math.floor((Date.now() - startTime) / 1000)}s elapsed
+                  </span>
+                )}
+              </div>
+              <CardDescription className="mt-1">
+                {currentStep || (loadingHistory ? "Loading…" : "Waiting to start…")}
+              </CardDescription>
+              {attemptCount > 0 && startTime && (
+                <div className="flex items-center gap-3 text-xs font-mono text-amber-600 dark:text-amber-400 mt-1">
+                  <Zap className="h-3 w-3" />
+                  <span>
+                    {attemptCount} scans · {(attemptCount / Math.max((Date.now() - startTime) / 1000, 1)).toFixed(1)}/sec
+                  </span>
+                  <span>• rapid scanner active</span>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={badge.variant}>{badge.label}</Badge>
+              {attemptCount > 0 && <Badge variant="outline">Attempt {attemptCount}</Badge>}
+              <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant={badge.variant}>{badge.label}</Badge>
-            {attemptCount > 0 && <Badge variant="outline">Attempt {attemptCount}</Badge>}
-            <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
-          </div>
-        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Last message banner */}
